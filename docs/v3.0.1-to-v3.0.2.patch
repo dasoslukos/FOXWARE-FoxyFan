@@ -1,0 +1,257 @@
+--- v3.0.1/FOXWARE-FoxyFan-v3.0.1.groovy
++++ v3.0.2/FOXWARE-FoxyFan-v3.0.2.groovy
+@@ -1,6 +1,6 @@
+ /**
+- * FOXWARE FoxyFan v3.0.1 — Native Hubitat Groovy App
+- * Status: DEVELOPMENT DRAFT (NOT HUB-VALIDATED)
++ * FOXWARE FoxyFan v3.0.2 — Native Hubitat Groovy App
++ * Status: v3.0.1 native manual cycle and OFF reporting live-tested; v3.0.2 changes pending validation
+  * Baseline: user-supplied FoxyFan webCoRE v2.0.3 Build 20 (2026-11-23)
+  *
+  * Each installation manages ONE bathroom (one humidity sensor + one fan switch).
+@@ -27,7 +27,7 @@
+ }
+ 
+ def mainPage() {
+-    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.1", install: true, uninstall: true) {
++    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.2", install: true, uninstall: true) {
+         section("Bathroom devices") {
+             input name: "humiditySensor", type: "capability.relativeHumidityMeasurement",
+                 title: "Humidity sensor", required: true
+@@ -60,9 +60,12 @@
+             input name: "postOffRefresh", type: "bool",
+                 title: "Refresh fan state after an app-requested OFF (driver permitting)",
+                 defaultValue: true, required: true
+-            paragraph "Some fan devices turn OFF correctly but leave Hubitat showing ON. " +
+-                "If Refresh is supported, FoxyFan requests one a few seconds after an automatic OFF. " +
+-                "This does not send another OFF command or fake a switch report."
++            input name: "postOnRefresh", type: "bool",
++                title: "Refresh fan state after shower-start ON (driver permitting)",
++                defaultValue: true, required: true
++            paragraph "The app requests a delayed readback only if the expected ON/OFF report " +
++                "has not arrived. Refresh is optional and does not fabricate a state change. " +
++                "A shower ON request is verified after 20 seconds before trusting a cached OFF."
+         }
+         section("FoxFlatus manual ventilation") {
+             input name: "manualMinutes", type: "number", title: "Manual fan runtime (minutes)",
+@@ -77,7 +80,11 @@
+                 defaultValue: true, required: true
+             input name: "notifyMaximum", type: "bool", title: "Notify at automatic maximum runtime",
+                 defaultValue: true, required: true
+-            input name: "notifyManual", type: "bool", title: "Notify at manual 20/30/etc. minute timeout",
++            input name: "notifyManualStart", type: "bool", title: "Notify when manual FoxFlatus ventilation starts",
++                defaultValue: false, required: true
++            input name: "notifyManual", type: "bool", title: "Notify when manual ventilation timer completes",
++                defaultValue: false, required: true
++            input name: "notifyManualEarlyOff", type: "bool", title: "Notify when manual ventilation ends early",
+                 defaultValue: false, required: true
+             input name: "staleNoticeMinutes", type: "number", title: "Warn after this long without a humidity CHANGE event (minutes)",
+                 defaultValue: 30, range: "5..240", required: true
+@@ -99,7 +106,6 @@
+                 paragraph "WARNING: Awaiting physical fan OFF report after app shutoff. " +
+                     "The app will not treat a possibly stale ON state as a new manual run."
+             }
+-            paragraph "This release is a development draft; no live Hubitat validation has been performed."
+         }
+     }
+ }
+@@ -107,7 +113,7 @@
+ // ─── Hubitat lifecycle ──────────────────────────────────────────────────────
+ 
+ def installed() {
+-    log.info "FOXWARE FoxyFan v3.0.1 installed (control disabled by default)"
++    log.info "FOXWARE FoxyFan v3.0.2 installed (control disabled by default)"
+     initialize()
+ }
+ 
+@@ -172,11 +178,17 @@
+     // Reconcile persisted runs on restart/Update before re-arming timers.
+     String physical = fanValue()
+     if (state.ffMode == "MANUAL" || state.ffMode == "SHOWER") {
+-        if (physical != "on") {
++        if (physical == "on") {
++            if (state.ffMode == "SHOWER") acknowledgeShowerOn("startup current switch report")
++            if (state.ffMode == "MANUAL") armManualTimeout()
++        } else if (state.ffMode == "SHOWER" && state.ffAwaitingOn == true &&
++                   state.ffOnRequestedAtMs != null &&
++                   t - (state.ffOnRequestedAtMs as Long) < 20000L) {
++            // Code was updated during the short shower ON readback window.
++            scheduleShowerOnReadback()
++        } else {
+             resetOwnership("startup reconciliation: fan not ON")
+             state.ffAwaitingOff = false
+-        } else if (state.ffMode == "MANUAL") {
+-            armManualTimeout()
+         }
+     } else if (physical == "off") {
+         state.ffAwaitingOff = false
+@@ -235,17 +247,23 @@
+         state.ffAwaitingOff = false
+         state.ffOffWarningIssued = false
+         if (state.ffMode == "MANUAL") {
+-            resetOwnership("manual ventilation ended early")
+-            log.info "FOXWARE FoxyFan: Manual ventilation ended early"
++            endManualEarly("fan OFF event")
+         } else if (state.ffMode == "SHOWER") {
+-            resetOwnership("fan was switched OFF during shower cycle")
+-            log.warn "FOXWARE FoxyFan: Shower cycle interrupted by fan OFF report"
++            if (state.ffAwaitingOn == true) {
++                // A cached/late OFF report immediately after ON is not yet proof
++                // that shower startup failed; the 20-second readback verifies it.
++                if (debugLogging == true) log.debug "FOXWARE FoxyFan: Ignoring OFF while shower ON confirmation is pending"
++            } else {
++                resetOwnership("fan was switched OFF during shower cycle")
++                log.warn "FOXWARE FoxyFan: Shower cycle interrupted by fan OFF report"
++            }
+         }
+     } else if (value == "on") {
+-        if (state.ffMode == "IDLE" && state.ffAwaitingOff != true) {
++        if (state.ffMode == "SHOWER") {
++            acknowledgeShowerOn("fan ON event")
++        } else if (state.ffMode == "IDLE" && state.ffAwaitingOff != true) {
+             startManual("fan ON event")
+         }
+-        // In SHOWER, an ON event is acknowledgement of this app's ON command.
+         // In MANUAL, duplicate ON events must never restart the timer.
+     }
+ }
+@@ -266,13 +284,24 @@
+ 
+     if (state.ffMode == "SHOWER") {
+         if (physical == "off") {
+-            resetOwnership("fan OFF reported on minute tick")
++            if (state.ffAwaitingOn == true) {
++                // Do not abandon shower ownership based on a potentially stale
++                // OFF report before verifyFanAfterOn() has had its chance.
++                if (state.ffOnRequestedAtMs == null ||
++                    t - (state.ffOnRequestedAtMs as Long) >= 20000L) {
++                    log.warn "FOXWARE FoxyFan: Shower ON still unconfirmed after 20s; releasing ownership"
++                    resetOwnership("shower ON not confirmed on minute tick")
++                }
++            } else {
++                resetOwnership("fan OFF reported on minute tick")
++            }
+         } else if (physical == "on") {
++            acknowledgeShowerOn("minute watchdog")
+             evaluateShower(t)
+         }
+     } else if (state.ffMode == "MANUAL") {
+         if (physical == "off") {
+-            resetOwnership("manual fan OFF observed on minute tick")
++            endManualEarly("minute watchdog detected OFF")
+         } else if (physical == "on") {
+             Long deadline = (state.ffStartedAtMs ?: t) as Long
+             deadline += minutesMs(prefInt("manualMinutes", 20, 1, 180))
+@@ -306,8 +335,13 @@
+         armManualTimeout()  // scheduled jobs may fire a little early
+         return
+     }
+-    if (fanValue() == "on") finishManual("scheduled timer")
+-    else resetOwnership("manual timeout fired after fan already OFF")
++    String physical = fanValue()
++    if (physical == "on") finishManual("scheduled timer")
++    else if (physical == "off") endManualEarly("scheduled callback observed fan already OFF")
++    else {
++        log.warn "FOXWARE FoxyFan: Manual timeout cannot read switch state; check device manually"
++        resetOwnership("manual timeout with unknown switch state")
++    }
+ }
+ 
+ // ─── Ownership, timers, and fan commands ────────────────────────────────────
+@@ -320,6 +354,16 @@
+     state.ffShowerBase = null
+     armManualTimeout()
+     log.info "FOXWARE FoxyFan: Manual ventilation started; ${prefInt('manualMinutes',20,1,180)}-minute timer armed (${reason})"
++    sendNotice("notifyManualStart", "Manual FoxFlatus ventilation started; ${prefInt('manualMinutes',20,1,180)}-minute timer armed (${reason}).")
++}
++
++private void endManualEarly(String reason) {
++    if (state.ffMode != "MANUAL") return
++    Long elapsedMs = state.ffStartedAtMs == null ? 0L : Math.max(0L, now() - (state.ffStartedAtMs as Long))
++    Integer elapsedMin = (elapsedMs / 60000L) as Integer
++    resetOwnership("manual ventilation ended early: ${reason}")
++    log.info "FOXWARE FoxyFan: Manual ventilation ended early (${reason})"
++    sendNotice("notifyManualEarlyOff", "Manual FoxFlatus ventilation ended early after about ${elapsedMin} minute(s) (${reason}).")
+ }
+ 
+ private void armManualTimeout() {
+@@ -339,13 +383,67 @@
+     state.ffStartedAtMs = now()
+     state.ffShowerBase = baseline
+     state.ffDrySinceMs = null
++    state.ffAwaitingOn = true
++    state.ffOnRequestedAtMs = now()
+     log.info "FOXWARE FoxyFan: Shower rise detected: RH=${rh}%, baseline=${baseline}%, rise=${rise} points"
+     try {
+         fanSwitch.on()
++        scheduleShowerOnReadback()
+         sendNotice("notifyShower", "Shower detected. RH=${rh}%, baseline=${baseline}%, rise=${rise} points. Fan ON requested.")
+     } catch (Exception ex) {
+         log.error "FOXWARE FoxyFan: Fan ON command failed: ${ex.message}"
+         resetOwnership("fan ON command failure")
++    }
++}
++
++/** No unconditional sensor refresh: humidity change events already supply RH. */
++private void scheduleShowerOnReadback() {
++    if (state.ffMode != "SHOWER" || state.ffAwaitingOn != true) return
++    Integer generation = state.ffGeneration as Integer
++    Long age = state.ffOnRequestedAtMs == null ? 0L :
++        Math.max(0L, now() - (state.ffOnRequestedAtMs as Long))
++    // Deadlines remain anchored to the original ON request after app updates.
++    if (postOnRefresh != false) {
++        Long refreshWait = Math.max(1L, ((Math.max(0L, 3000L - age) + 999L) / 1000L) as Long)
++        runIn(refreshWait, "refreshFanAfterOn", [overwrite: true, data: [generation: generation]])
++    }
++    Long verifyWait = Math.max(1L, ((Math.max(0L, 20000L - age) + 999L) / 1000L) as Long)
++    runIn(verifyWait, "verifyFanAfterOn", [overwrite: true, data: [generation: generation]])
++}
++
++private void acknowledgeShowerOn(String reason) {
++    if (state.ffMode != "SHOWER" || state.ffAwaitingOn != true) return
++    state.ffAwaitingOn = false
++    state.ffOnRequestedAtMs = null
++    if (debugLogging == true) log.debug "FOXWARE FoxyFan: Shower fan ON confirmed (${reason})"
++}
++
++def refreshFanAfterOn(Map data = null) {
++    if (enableControl != true || !fanSwitch || postOnRefresh == false) return
++    if (data?.generation == null || (data.generation as Integer) != (state.ffGeneration as Integer)) return
++    if (state.ffMode != "SHOWER" || state.ffAwaitingOn != true) return
++    try {
++        if (fanSwitch.hasCommand("refresh")) {
++            log.info "FOXWARE FoxyFan: Requesting fan Refresh after shower ON; current reported switch=${fanValue()}"
++            fanSwitch.refresh()
++        } else {
++            log.warn "FOXWARE FoxyFan: Selected fan driver has no Refresh command; awaiting native ON report"
++        }
++    } catch (Exception ex) {
++        log.warn "FOXWARE FoxyFan: Post-ON Refresh failed: ${ex.message}"
++    }
++}
++
++def verifyFanAfterOn(Map data = null) {
++    if (enableControl != true || !fanSwitch) return
++    if (data?.generation == null || (data.generation as Integer) != (state.ffGeneration as Integer)) return
++    if (state.ffMode != "SHOWER" || state.ffAwaitingOn != true) return
++    if (fanValue() == "on") {
++        acknowledgeShowerOn("20-second readback")
++    } else {
++        log.warn "FOXWARE FoxyFan: Shower fan ON not confirmed after 20 seconds; reported switch=${fanValue()}. " +
++            "Releasing ownership; inspect fan/device manually."
++        resetOwnership("shower ON not confirmed")
+     }
+ }
+ 
+@@ -446,7 +544,11 @@
+ 
+ private void resetOwnership(String detail) {
+     unschedule("manualTimeoutHandler")
++    unschedule("refreshFanAfterOn")
++    unschedule("verifyFanAfterOn")
+     moveTo("IDLE", detail)
++    state.ffAwaitingOn = false
++    state.ffOnRequestedAtMs = null
+     state.ffStartedAtMs = null
+     state.ffDrySinceMs = null
+     state.ffShowerBase = null

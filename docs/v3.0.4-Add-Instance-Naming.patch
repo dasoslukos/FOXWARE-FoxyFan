@@ -1,0 +1,16 @@
+--- v3.0.4 original groovy
++++ v3.0.4 + Instance naming
+@@ -28,6 +28,13 @@
+ 
+ def mainPage() {
+     dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.4", install: true, uninstall: true) {
++        section("Instance naming") {
++            // Native Hubitat app label; updates app.label and the Apps-list name.
++            // The shared notificationIdentity() helper already prefers custom labels.
++            label title: "Name this FoxyFan instance (e.g., Master Bathroom)", required: false
++            paragraph "Give each bathroom a distinct name, such as Master Bathroom or Guest Bathroom. " +
++                "This name also identifies the bathroom in push notifications."
++        }
+         section("Bathroom devices") {
+             input name: "humiditySensor", type: "capability.relativeHumidityMeasurement",
+                 title: "Humidity sensor", required: true

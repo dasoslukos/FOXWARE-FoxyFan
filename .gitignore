@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+.AppleDouble
+._*
+
+# Python test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak
+*~

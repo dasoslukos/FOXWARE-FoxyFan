@@ -1,0 +1,255 @@
+/**************************************************************/
+/* Automation: FoxyFan v2.0.3                                 */
+/**************************************************************/
+/* Author     : Foxy                                          */
+/* Created    : 11/15/2026, 10:34:04 PM                       */
+/* Modified   : 11/23/2026, 2:08:05 PM                        */
+/* Build      : 20                                            */
+/* UI version : v0.3.114.20220203                             */
+/**************************************************************/
+
+define
+    integer showerBase; /* 67 */
+    datetime fanStartedAt; /* 11/22/2026, 10:14:06 PM */
+    datetime dryStartedAt; /* 11/22/2026, 10:49:01 PM */
+    boolean ownsFan; /* false */
+    integer currentRH; /* 73 */
+    boolean dryConfirming; /* false */
+    integer rh1m; /* 73 */
+    integer rh2m; /* 73 */
+    integer rh3m; /* 73 */
+    integer rh4m; /* 73 */
+    integer rh5m; /* 73 */
+    integer rh6m; /* 74 */
+    boolean manualFanActive; /* */
+    datetime manualFanStartedAt; /* Invalid Date */
+end define;
+
+/* FOXWARE */
+execute
+    if
+        Master Bath Fan's switch changes to on
+        and
+        {ownsFan} is false
+    then
+        with
+            Master Bath Fan
+        do
+            Set variable {manualFanActive} = true;
+            Set variable {manualFanStartedAt} = {$now};
+            Log info "FOXWARE FoxyFan: Manual ventilation started; 20-minute timer armed." and store in Messages;
+        end with;
+    end if;
+    if
+        Master Bath Motion Sensor's humidity changes
+    then
+        with
+            Master Bath Motion Sensor
+        do
+            Set variable {currentRH} = Master Bath Motion Sensor's humidity;
+        end with;
+        if
+            {rh6m} is greater than 0
+        then
+            if
+                {currentRH - rh6m} is greater than or equal to 6
+                and
+                Location mode is any of Home, Home-NoMotion, or Home - Guest Mode
+                and
+                Master Bath Fan's switch is off
+            then
+                Log info "FOXWARE FoxyFan: Shower humidity rise detected!" and store in Messages;
+                Set variable {showerBase} = {rh6m};
+                Set variable {fanStartedAt} = {$now};
+                Set variable {dryConfirming} = false;
+                Set variable {manualFanActive} = false;
+                Set variable {ownsFan} = true;
+                with
+                    Master Bath Fan
+                do
+                    Turn on;
+                    Refresh;
+                    Send PUSH notification "FOXWARE FoxyFan: Shower detected. RH={currentRH}%, baseline={showerBase}%, rise={currentRH - showerBase} points. Master Bath Fan ON requested." and store in Messages;
+                end with;
+            end if;
+        end if;
+        Log info "FoxyFan ROLLING: RH={currentRH}% Baseline5m={rh6m}% Delta={currentRH - rh6m}" and store in Messages;
+    end if;
+    every minute
+    do
+        if
+            {ownsFan} is true
+        then
+            if
+                {manualFanActive} is true
+            then
+                with
+                    Master Bath Fan
+                do
+                    Set variable {manualFanActive} = false;
+                end with;
+            end if;
+        else
+            if
+                {manualFanActive} is not true
+            then
+                if
+                    Master Bath Fan's switch is on
+                then
+                    with
+                        Master Bath Fan
+                    do
+                        Set variable {manualFanActive} = true;
+                        Set variable {manualFanStartedAt} = {$now};
+                        Log info "FOXWARE FoxyFan: Found fan ON without piston ownership; manual 20-minute timer started.";
+                    end with;
+                end if;
+            else
+                if
+                    Master Bath Fan's switch is off
+                then
+                    with
+                        Master Bath Fan
+                    do
+                        Set variable {manualFanActive} = false;
+                        Log info "FOXWARE FoxyFan: Manual ventilation ended early." and store in Messages;
+                    end with;
+                else
+                    if
+                        {$now} is after {addMinutes(manualFanStartedAt, 20)}
+                        and
+                        {ownsFan} is false
+                        and
+                        Master Bath Fan's switch is on
+                    then
+                        with
+                            Master Bath Fan
+                        do
+                            Log info "FOXWARE FoxyFan: Manual 20-minute ventilation complete; requesting fan OFF." and store in Messages;
+                            Turn off;
+                            Refresh;
+                            Set variable {manualFanActive} = false;
+                        end with;
+                    end if;
+                end if;
+            end if;
+        end if;
+        if
+            {ownsFan} is true
+            and
+            Master Bath Fan's switch is on
+        then
+            if
+                {$now} is after {addMinutes(fanStartedAt, 15)}
+            then
+                if
+                    Master Bath Motion Sensor's humidity is less than or equal to {showerBase + 9}%
+                then
+                    if
+                        {dryConfirming} is false
+                    then
+                        with
+                            Master Bath Motion Sensor
+                        do
+                            Set variable {dryStartedAt} = {$now};
+                            Set variable {dryConfirming} = true;
+                        end with;
+                    else
+                        if
+                            {$now} is after {addMinutes(dryStartedAt, 5)}
+                        then
+                            with
+                                Master Bath Motion Sensor
+                            do
+                                Log info "FOXWARE FoxyFan: Bathroom drying complete! RH={currentRH}% Baseline={showerBase}%" and store in Messages;
+                            end with;
+                            with
+                                Master Bath Fan
+                            do
+                                Turn off;
+                                Refresh;
+                                Send PUSH notification "FOXWARE FoxyFan: Drying complete. RH={currentRH}%, baseline={showerBase}%, threshold={showerBase + 9}%. Master Bath Fan OFF requested." and store in Messages;
+                            end with;
+                            with
+                                Master Bath Motion Sensor
+                            do
+                                Set variable {ownsFan} = false;
+                                Set variable {dryConfirming} = false;
+                            end with;
+                        end if;
+                    end if;
+                else
+                    with
+                        Master Bath Motion Sensor
+                    do
+                        Set variable {dryConfirming} = false;
+                    end with;
+                end if;
+            end if;
+            if
+                {$now} is after {addMinutes(fanStartedAt, 80)}
+            then
+                with
+                    Master Bath Motion Sensor
+                do
+                    Log info "FOXWARE FoxyFan: Maximum 80-minute runtime reached! RH={currentRH}%" and store in Messages;
+                end with;
+                with
+                    Master Bath Fan
+                do
+                    Turn off;
+                    Refresh;
+                    Send PUSH notification "FOXWARE FoxyFan: Maximum 80-minute runtime reached. RH={currentRH}%. Master Bath Fan OFF requested." and store in Messages;
+                end with;
+                with
+                    Master Bath Motion Sensor
+                do
+                    Set variable {ownsFan} = false;
+                    Set variable {dryConfirming} = false;
+                end with;
+            end if;
+        end if;
+        if
+            {ownsFan} is true
+            and
+            Master Bath Fan's switch is off
+        then
+            with
+                Master Bath Motion Sensor
+            do
+                Set variable {ownsFan} = false;
+                Set variable {dryConfirming} = false;
+            end with;
+        end if;
+        if
+            {rh6m} is less than 1
+        then
+            with
+                Master Bath Motion Sensor
+            do
+                Set variable {rh1m} = Master Bath Motion Sensor's humidity;
+                Set variable {rh2m} = Master Bath Motion Sensor's humidity;
+                Set variable {rh3m} = Master Bath Motion Sensor's humidity;
+                Set variable {rh4m} = Master Bath Motion Sensor's humidity;
+                Set variable {rh5m} = Master Bath Motion Sensor's humidity;
+                Set variable {rh6m} = Master Bath Motion Sensor's humidity;
+            end with;
+        else
+            with
+                Master Bath Motion Sensor
+            do
+                Set variable {rh6m} = {rh5m};
+                Set variable {rh5m} = {rh4m};
+                Set variable {rh4m} = {rh3m};
+                Set variable {rh3m} = {rh2m};
+                Set variable {rh2m} = {rh1m};
+                Set variable {rh1m} = Master Bath Motion Sensor's humidity;
+            end with;
+        end if;
+        with
+            Master Bath Motion Sensor
+        do
+            Set variable {@humidtrip} = {ownsFan};
+        end with;
+    end every;
+end execute;

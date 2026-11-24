@@ -1,0 +1,38 @@
+--- v3.0.2/FOXWARE-FoxyFan.groovy
++++ v3.0.3/FOXWARE-FoxyFan.groovy
+@@ -1,6 +1,6 @@
+ /**
+- * FOXWARE FoxyFan v3.0.2 — Native Hubitat Groovy App
+- * Status: v3.0.1 native manual cycle and OFF reporting live-tested; v3.0.2 changes pending validation
++ * FOXWARE FoxyFan v3.0.3 — Native Hubitat Groovy App
++ * Status: v3.0.2 manual control, shower detection and drying completion live-tested; v3.0.3 UI text only
+  * Baseline: user-supplied FoxyFan webCoRE v2.0.3 Build 20 (2026-11-23)
+  *
+  * Each installation manages ONE bathroom (one humidity sensor + one fan switch).
+@@ -27,7 +27,7 @@
+ }
+ 
+ def mainPage() {
+-    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.2", install: true, uninstall: true) {
++    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.3", install: true, uninstall: true) {
+         section("Bathroom devices") {
+             input name: "humiditySensor", type: "capability.relativeHumidityMeasurement",
+                 title: "Humidity sensor", required: true
+@@ -93,7 +93,7 @@
+                 "not proof of a failed sensor; maximum-runtime protection remains active."
+         }
+         section("Activation and instance status") {
+-            input name: "enableControl", type: "bool", title: "ENABLE native fan control (leave OFF until cutover)",
++            input name: "enableControl", type: "bool", title: "Enable Fan Control (can be disabled for testing)",
+                 defaultValue: false, required: true
+             paragraph "Instance: ${app.label ?: 'FOXWARE FoxyFan'}"
+             paragraph "Control: ${(enableControl == true) ? 'ENABLED' : 'DISABLED'}; " +
+@@ -113,7 +113,7 @@
+ // ─── Hubitat lifecycle ──────────────────────────────────────────────────────
+ 
+ def installed() {
+-    log.info "FOXWARE FoxyFan v3.0.2 installed (control disabled by default)"
++    log.info "FOXWARE FoxyFan v3.0.3 installed (control disabled by default)"
+     initialize()
+ }
+ 

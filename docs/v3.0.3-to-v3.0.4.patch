@@ -1,0 +1,72 @@
+--- v3.0.3/FOXWARE-FoxyFan.groovy
++++ v3.0.4/FOXWARE-FoxyFan.groovy
+@@ -1,6 +1,6 @@
+ /**
+- * FOXWARE FoxyFan v3.0.3 — Native Hubitat Groovy App
+- * Status: v3.0.2 manual control, shower detection and drying completion live-tested; v3.0.3 UI text only
++ * FOXWARE FoxyFan v3.0.4 — Native Hubitat Groovy App
++ * Status: Native manual and shower control validated in v3.0.2; v3.0.4 notification identity polish
+  * Baseline: user-supplied FoxyFan webCoRE v2.0.3 Build 20 (2026-11-23)
+  *
+  * Each installation manages ONE bathroom (one humidity sensor + one fan switch).
+@@ -27,7 +27,7 @@
+ }
+ 
+ def mainPage() {
+-    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.3", install: true, uninstall: true) {
++    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.4", install: true, uninstall: true) {
+         section("Bathroom devices") {
+             input name: "humiditySensor", type: "capability.relativeHumidityMeasurement",
+                 title: "Humidity sensor", required: true
+@@ -96,6 +96,7 @@
+             input name: "enableControl", type: "bool", title: "Enable Fan Control (can be disabled for testing)",
+                 defaultValue: false, required: true
+             paragraph "Instance: ${app.label ?: 'FOXWARE FoxyFan'}"
++            paragraph "Notification identity: ${notificationIdentity()}"
+             paragraph "Control: ${(enableControl == true) ? 'ENABLED' : 'DISABLED'}; " +
+                 "mode: ${state.ffMode ?: 'IDLE'}; " +
+                 "current RH: ${state.ffLastRh != null ? (state.ffLastRh + '%') : 'unknown'}; " +
+@@ -113,7 +114,7 @@
+ // ─── Hubitat lifecycle ──────────────────────────────────────────────────────
+ 
+ def installed() {
+-    log.info "FOXWARE FoxyFan v3.0.3 installed (control disabled by default)"
++    log.info "FOXWARE FoxyFan v3.0.4 installed (control disabled by default)"
+     initialize()
+ }
+ 
+@@ -636,11 +637,33 @@
+     }
+ }
+ 
++/**
++ * One distinct prefix per installation; no duplicated FOXWARE FoxyFan name.
++ * Installed-app custom label wins (e.g. "Guest Bathroom"). When the default
++ * label has not been customized, use that installation's configured fan name
++ * (e.g. "Master Bath Fan"). App ID is a last-resort unambiguous identifier.
++ */
++private String notificationIdentity() {
++    final String brand = "FOXWARE FoxyFan"
++    String installedLabel = app?.label?.toString()?.replaceAll(/\s+/, " ")?.trim()
++    if (installedLabel && !installedLabel.equalsIgnoreCase(brand)) {
++        // Already branded labels are complete identifiers; don't prefix twice.
++        if (installedLabel.toLowerCase().startsWith(brand.toLowerCase() + " ")) {
++            return installedLabel
++        }
++        return "${brand} (${installedLabel})"
++    }
++    String fanName = fanSwitch?.displayName?.toString()?.replaceAll(/\s+/, " ")?.trim()
++    if (fanName) return "${brand} (${fanName})"
++    return "${brand} (instance ${app.id})"
++}
++
+ private void sendNotice(String settingName, String text) {
+     if (settings[settingName] != true || !notificationDevices) return
++    String prefix = notificationIdentity()
+     notificationDevices.each { destination ->
+         try {
+-            destination.deviceNotification("FOXWARE FoxyFan (${app.label ?: 'Bathroom'}): ${text}")
++            destination.deviceNotification("${prefix}: ${text}")
+         } catch (Exception ex) {
+             log.warn "FOXWARE FoxyFan: Notification to ${destination?.displayName} failed: ${ex.message}"
+         }

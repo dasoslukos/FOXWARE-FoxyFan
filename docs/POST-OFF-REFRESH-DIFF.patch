@@ -1,0 +1,84 @@
+--- v3.0.0
++++ v3.0.1
+@@ -1,5 +1,5 @@
+ /**
+- * FOXWARE FoxyFan v3.0.0 — Native Hubitat Groovy App
++ * FOXWARE FoxyFan v3.0.1 — Native Hubitat Groovy App
+  * Status: DEVELOPMENT DRAFT (NOT HUB-VALIDATED)
+  * Baseline: user-supplied FoxyFan webCoRE v2.0.3 Build 20 (2026-11-23)
+  *
+@@ -27,7 +27,7 @@
+ }
+ 
+ def mainPage() {
+-    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.0", install: true, uninstall: true) {
++    dynamicPage(name: "mainPage", title: "FOXWARE FoxyFan v3.0.1", install: true, uninstall: true) {
+         section("Bathroom devices") {
+             input name: "humiditySensor", type: "capability.relativeHumidityMeasurement",
+                 title: "Humidity sensor", required: true
+@@ -55,6 +55,14 @@
+                 defaultValue: 5, range: "1..60", required: true
+             input name: "maximumShowerMinutes", type: "number", title: "Absolute automatic shower runtime (minutes)",
+                 defaultValue: 80, range: "2..240", required: true
++        }
++        section("Fan status synchronization") {
++            input name: "postOffRefresh", type: "bool",
++                title: "Refresh fan state after an app-requested OFF (driver permitting)",
++                defaultValue: true, required: true
++            paragraph "Some fan devices turn OFF correctly but leave Hubitat showing ON. " +
++                "If Refresh is supported, FoxyFan requests one a few seconds after an automatic OFF. " +
++                "This does not send another OFF command or fake a switch report."
+         }
+         section("FoxFlatus manual ventilation") {
+             input name: "manualMinutes", type: "number", title: "Manual fan runtime (minutes)",
+@@ -99,7 +107,7 @@
+ // ─── Hubitat lifecycle ──────────────────────────────────────────────────────
+ 
+ def installed() {
+-    log.info "FOXWARE FoxyFan v3.0.0 installed (control disabled by default)"
++    log.info "FOXWARE FoxyFan v3.0.1 installed (control disabled by default)"
+     initialize()
+ }
+ 
+@@ -393,12 +401,41 @@
+     state.ffOffWarningIssued = false
+     try {
+         fanSwitch.off()
++        // Give the relay time to finish moving before asking the driver to
++        // read back its actual state. Guarded callback cannot affect a new run.
++        if (postOffRefresh != false) {
++            runIn(3, "refreshFanAfterOff", [overwrite: true,
++                data: [generation: state.ffGeneration]])
++        }
+     } catch (Exception ex) {
+         log.error "FOXWARE FoxyFan: Fan OFF command failed; check switch manually: ${ex.message}"
+     }
+     if (type == "DRY") sendNotice("notifyDry", detail + ". Fan OFF requested.")
+     else if (type == "MAXIMUM") sendNotice("notifyMaximum", detail + ". Fan OFF requested.")
+     else if (type == "MANUAL") sendNotice("notifyManual", detail + ". Fan OFF requested.")
++}
++
++/**
++ * Refresh is OPTIONAL: capability.switch promises on/off but not refresh().
++ * Only refresh if the same OFF operation is still awaiting a report.
++ * The generation token protects a new MANUAL or SHOWER run from stale jobs.
++ */
++def refreshFanAfterOff(Map data = null) {
++    if (enableControl != true || !fanSwitch || postOffRefresh == false) return
++    if (data?.generation == null ||
++        (data.generation as Integer) != (state.ffGeneration as Integer)) return
++    if (state.ffMode != "IDLE" || state.ffAwaitingOff != true) return
++    try {
++        if (fanSwitch.hasCommand("refresh")) {
++            log.info "FOXWARE FoxyFan: Requesting fan Refresh after OFF; current reported switch=${fanValue()}"
++            fanSwitch.refresh()
++        } else {
++            log.warn "FOXWARE FoxyFan: Selected fan driver has no Refresh command; " +
++                "waiting for native switch report"
++        }
++    } catch (Exception ex) {
++        log.warn "FOXWARE FoxyFan: Post-OFF Refresh failed: ${ex.message}"
++    }
+ }
+ 
+ private void moveTo(String target, String detail) {
